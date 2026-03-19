@@ -50,19 +50,23 @@ def validar_sql(sql):
         return False, "Apenas queries SELECT são permitidas."
     return True, ""
 def gerar_sql(pergunta, schema):
-    
-    prompt = f"""Você é um analista de dados especialista em SQL para SQLite.
-Dado o schema abaixo, converta a pergunta em uma query SQL válida para SQLite.
-Retorne APENAS o SQL, sem explicações, sem markdown, sem crases.
+    prompt = f"""Você é um especialista em SQL para SQLite. Sua única tarefa é converter perguntas em queries SQL corretas e executáveis.
 
-Regras importantes:
-- Nunca use ORDER BY dentro de subqueries de um UNION ou UNION ALL
-- Se precisar combinar resultados com UNION ALL, envolva em uma subquery antes de ordenar
-- Use apenas sintaxe compatível com SQLite
-- Retorne apenas uma query SQL completa e válida
-
-Schema:
+Schema do banco:
 {schema}
+
+Regras obrigatórias:
+1. Retorne APENAS o SQL puro, sem explicações, sem markdown, sem crases, sem comentários
+2. Use apenas tabelas e colunas que existem no schema acima
+3. Nunca use ORDER BY dentro de subqueries ou CTEs com UNION / UNION ALL
+4. Quando usar UNION ALL com ORDER BY, sempre envolva em uma subquery externa:
+   SELECT * FROM (SELECT ... UNION ALL SELECT ...) ORDER BY ...
+5. Nunca use funções que não existem no SQLite (ex: MONTH(), YEAR() não existem — use strftime('%m', coluna) e strftime('%Y', coluna))
+6. Para datas, sempre use strftime() do SQLite
+7. Quando a pergunta pedir "top N e bottom N" ao mesmo tempo, use CTE ou subquery, nunca ORDER BY dentro do UNION
+8. Sempre use aliases claros nas colunas calculadas
+9. Prefira JOINs explícitos (INNER JOIN, LEFT JOIN) em vez de subqueries quando possível
+10. Nunca retorne mais de 1000 linhas — use LIMIT quando necessário
 
 Pergunta: {pergunta}
 
