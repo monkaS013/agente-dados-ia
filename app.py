@@ -67,6 +67,9 @@ Regras obrigatórias:
 8. Sempre use aliases claros nas colunas calculadas
 9. Prefira JOINs explícitos (INNER JOIN, LEFT JOIN) em vez de subqueries quando possível
 10. Nunca retorne mais de 1000 linhas — use LIMIT quando necessário
+11. Nunca use funções de janela (LAG, LEAD, RANK, ROW_NUMBER) dentro de HAVING ou WHERE — calcule em CTE ou subquery primeiro
+12. Para calcular crescimento mês a mês, use uma subquery com self-join em vez de LAG()
+13. Funções de janela só podem aparecer no SELECT, nunca em HAVING, WHERE ou GROUP BY
 
 Pergunta: {pergunta}
 
