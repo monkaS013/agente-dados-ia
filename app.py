@@ -40,15 +40,6 @@ def get_schema():
     conn.close()
     return schema
 
-def validar_sql(sql):
-    palavras_proibidas = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "CREATE"]
-    sql_upper = sql.upper()
-    for palavra in palavras_proibidas:
-        if palavra in sql_upper:
-            return False, f"Query bloqueada: contém comando '{palavra}' não permitido."
-    if not sql_upper.strip().startswith("SELECT"):
-        return False, "Apenas queries SELECT são permitidas."
-    return True, ""
 def gerar_sql(pergunta, schema):
     prompt = f"""Você é um especialista em SQL para SQLite. Sua única tarefa é converter perguntas em queries SQL corretas e executáveis.
 
@@ -82,6 +73,31 @@ SQL:"""
     sql = sql.replace("```sql", "").replace("```", "").strip()
     return sql
 
+def gerar_sql_com_erro(pergunta, schema, sql_anterior, erro):
+    prompt = f"""Você é um especialista em SQL para SQLite. O SQL abaixo gerou um erro ao ser executado.
+Corrija o SQL para resolver o erro, mantendo o objetivo original da pergunta.
+Retorne APENAS o SQL corrigido, sem explicações, sem markdown, sem crases.
+
+Schema:
+{schema}
+
+Pergunta original: {pergunta}
+
+SQL com erro:
+{sql_anterior}
+
+Erro retornado:
+{erro}
+
+SQL corrigido:"""
+    resposta = cliente.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    sql = resposta.choices[0].message.content.strip()
+    sql = sql.replace("```sql", "").replace("```", "").strip()
+    return sql
+
 def interpretar_resultado(pergunta, sql, resultado):
     prompt = f"""Você é um analista de dados. Responda a pergunta abaixo em português 
 de forma clara e objetiva, baseado nos dados retornados pela query SQL.
@@ -98,6 +114,16 @@ Resposta:"""
     )
     return resposta.choices[0].message.content.strip()
 
+def validar_sql(sql):
+    palavras_proibidas = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "CREATE"]
+    sql_upper = sql.upper()
+    for palavra in palavras_proibidas:
+        if palavra in sql_upper:
+            return False, f"Query bloqueada: contém comando '{palavra}' não permitido."
+    if not sql_upper.strip().startswith("SELECT"):
+        return False, "Apenas queries SELECT são permitidas."
+    return True, ""
+
 def tentar_grafico(df):
     if df is None or df.empty or len(df.columns) < 2:
         return
@@ -107,12 +133,11 @@ def tentar_grafico(df):
         fig = px.bar(df, x=col1, y=col2, title="Visualização dos dados")
         st.plotly_chart(fig, use_container_width=True)
 
-# Sidebar com perguntas de exemplo e histórico
 with st.sidebar:
     st.subheader("💡 Perguntas de exemplo")
-    for pergunta in PERGUNTAS_EXEMPLO:
-        if st.button(pergunta, use_container_width=True):
-            st.session_state.pergunta_input = pergunta
+    for pergunta_ex in PERGUNTAS_EXEMPLO:
+        if st.button(pergunta_ex, use_container_width=True):
+            st.session_state.pergunta_input = pergunta_ex
 
     st.divider()
     st.subheader("🕘 Histórico")
@@ -121,7 +146,6 @@ with st.sidebar:
     for item in reversed(st.session_state.historico[-5:]):
         st.caption(f"• {item}")
 
-# Input principal
 if "pergunta_input" not in st.session_state:
     st.session_state.pergunta_input = ""
 
@@ -142,38 +166,42 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
         st.error(mensagem_erro)
         st.stop()
 
-    valido, mensagem_erro = validar_sql(sql)
-    if not valido:
-        st.error(mensagem_erro)
-        st.stop()
+    MAX_TENTATIVAS = 3
+    tentativa = 0
+    df = None
+    erro_anterior = None
 
-    try:
-        conn = sqlite3.connect("ecommerce.db")
-        df = pd.read_sql(sql, conn)
-        conn.close()
+    while tentativa < MAX_TENTATIVAS:
+        try:
+            if erro_anterior:
+                with st.spinner(f"Corrigindo SQL (tentativa {tentativa + 1})..."):
+                    sql = gerar_sql_com_erro(pergunta, schema, sql, erro_anterior)
+            conn = sqlite3.connect("ecommerce.db")
+            df = pd.read_sql(sql, conn)
+            conn.close()
+            erro_anterior = None
+            break
+        except Exception as e:
+            erro_anterior = str(e)
+            tentativa += 1
 
+    if erro_anterior:
+        st.error(f"Não foi possível gerar um SQL válido após {MAX_TENTATIVAS} tentativas.")
+        st.code(sql, language="sql")
+    else:
         with st.spinner("Interpretando resultado..."):
             resposta = interpretar_resultado(pergunta, sql, df.to_string())
 
-        # Resposta principal
         st.success(resposta)
-
-        # Gráfico automático
         tentar_grafico(df)
 
-        # Dados e SQL em abas
         aba1, aba2 = st.tabs(["📊 Dados", "🔧 SQL gerado"])
         with aba1:
             st.dataframe(df, use_container_width=True)
         with aba2:
             st.code(sql, language="sql")
 
-        # Salva no histórico
         if "historico" not in st.session_state:
             st.session_state.historico = []
         st.session_state.historico.append(pergunta)
         st.session_state.pergunta_input = ""
-
-    except Exception as e:
-        st.error(f"Erro ao executar a query: {e}")
-        st.code(sql, language="sql")
