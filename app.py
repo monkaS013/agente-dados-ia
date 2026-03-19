@@ -50,9 +50,16 @@ def validar_sql(sql):
         return False, "Apenas queries SELECT são permitidas."
     return True, ""
 def gerar_sql(pergunta, schema):
-    prompt = f"""Você é um analista de dados especialista em SQL.
+    
+    prompt = f"""Você é um analista de dados especialista em SQL para SQLite.
 Dado o schema abaixo, converta a pergunta em uma query SQL válida para SQLite.
 Retorne APENAS o SQL, sem explicações, sem markdown, sem crases.
+
+Regras importantes:
+- Nunca use ORDER BY dentro de subqueries de um UNION ou UNION ALL
+- Se precisar combinar resultados com UNION ALL, envolva em uma subquery antes de ordenar
+- Use apenas sintaxe compatível com SQLite
+- Retorne apenas uma query SQL completa e válida
 
 Schema:
 {schema}
