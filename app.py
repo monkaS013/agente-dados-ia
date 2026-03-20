@@ -399,6 +399,27 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
         aba1, aba2 = st.tabs(["📊 Dados", "🔧 SQL gerado"])
         with aba1:
             st.dataframe(df, use_container_width=True)
+
+            col_csv, col_excel = st.columns([1, 1])
+            with col_csv:
+                st.download_button(
+                    label="📥 Baixar CSV",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name="resultado.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            with col_excel:
+                import io
+                buffer = io.BytesIO()
+                df.to_excel(buffer, index=False, engine="openpyxl")
+                st.download_button(
+                    label="📊 Baixar Excel",
+                    data=buffer.getvalue(),
+                    file_name="resultado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
         with aba2:
             st.code(sql, language="sql")
 
