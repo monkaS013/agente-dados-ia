@@ -11,7 +11,7 @@ st.caption("Monitoramento de perguntas e feedbacks do agente")
 
 def carregar_feedbacks():
     try:
-        conn = sqlite3.connect("ecommerce.db")
+        conn = sqlite3.connect("feedbacks.db")
         df = pd.read_sql("""
             SELECT pergunta, sql_gerado, avaliacao, timestamp
             FROM feedbacks
