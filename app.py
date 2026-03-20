@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import plotly.express as px
 import streamlit as st
 import os
+import time
 
 load_dotenv()
 cliente = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -40,6 +41,19 @@ def get_schema():
     conn.close()
     return schema
 
+def chamar_groq(mensagens):
+    try:
+        resposta = cliente.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=mensagens
+        )
+        return resposta.choices[0].message.content.strip()
+    except Exception as e:
+        erro = str(e).lower()
+        if "rate limit" in erro or "429" in erro:
+            return "__RATE_LIMIT__"
+        return None
+
 def gerar_sql(pergunta, schema):
     prompt = f"""Você é um especialista em SQL para SQLite. Sua única tarefa é converter perguntas em queries SQL corretas e executáveis.
 
@@ -65,12 +79,11 @@ Regras obrigatórias:
 Pergunta: {pergunta}
 
 SQL:"""
-    resposta = cliente.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    sql = resposta.choices[0].message.content.strip()
-    sql = sql.replace("```sql", "").replace("```", "").strip()
+
+    resultado = chamar_groq([{"role": "user", "content": prompt}])
+    if resultado in (None, "__RATE_LIMIT__"):
+        return resultado
+    sql = resultado.replace("```sql", "").replace("```", "").strip()
     return sql
 
 def gerar_sql_com_erro(pergunta, schema, sql_anterior, erro):
@@ -90,12 +103,11 @@ Erro retornado:
 {erro}
 
 SQL corrigido:"""
-    resposta = cliente.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    sql = resposta.choices[0].message.content.strip()
-    sql = sql.replace("```sql", "").replace("```", "").strip()
+
+    resultado = chamar_groq([{"role": "user", "content": prompt}])
+    if resultado in (None, "__RATE_LIMIT__"):
+        return resultado
+    sql = resultado.replace("```sql", "").replace("```", "").strip()
     return sql
 
 def interpretar_resultado(pergunta, sql, resultado):
@@ -108,11 +120,13 @@ SQL executado: {sql}
 Resultado: {resultado}
 
 Resposta:"""
-    resposta = cliente.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return resposta.choices[0].message.content.strip()
+
+    resultado_llm = chamar_groq([{"role": "user", "content": prompt}])
+    if resultado_llm == "__RATE_LIMIT__":
+        return "⚠️ Limite de requisições atingido. Aguarde alguns segundos e tente novamente."
+    if resultado_llm is None:
+        return "⚠️ Erro ao interpretar o resultado. Tente novamente."
+    return resultado_llm
 
 def validar_sql(sql):
     palavras_proibidas = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "CREATE"]
@@ -146,7 +160,7 @@ with st.sidebar:
     for item in reversed(st.session_state.historico[-5:]):
         if st.button(item, key=f"hist_{item}", use_container_width=True):
             st.session_state.pergunta_input = item
-            
+
 if "pergunta_input" not in st.session_state:
     st.session_state.pergunta_input = ""
 
@@ -161,6 +175,14 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
 
     with st.spinner("Gerando SQL..."):
         sql = gerar_sql(pergunta, schema)
+
+    if sql == "__RATE_LIMIT__":
+        st.warning("⚠️ Limite de requisições atingido. Aguarde alguns segundos e tente novamente.")
+        st.stop()
+
+    if sql is None:
+        st.error("Erro ao gerar SQL. Tente novamente.")
+        st.stop()
 
     valido, mensagem_erro = validar_sql(sql)
     if not valido:
@@ -177,6 +199,9 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
             if erro_anterior:
                 with st.spinner(f"Corrigindo SQL (tentativa {tentativa + 1})..."):
                     sql = gerar_sql_com_erro(pergunta, schema, sql, erro_anterior)
+                if sql in (None, "__RATE_LIMIT__"):
+                    st.warning("⚠️ Limite de requisições atingido. Aguarde alguns segundos e tente novamente.")
+                    st.stop()
             conn = sqlite3.connect("ecommerce.db")
             df = pd.read_sql(sql, conn)
             conn.close()
