@@ -81,7 +81,7 @@ def executar_sql_seguro(sql):
 
 def salvar_feedback(pergunta, sql, avaliacao):
     try:
-        conn = sqlite3.connect("ecommerce.db")
+        conn = sqlite3.connect("feedbacks.db")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS feedbacks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,17 +295,15 @@ if "historico" not in st.session_state:
 if "pergunta_input" not in st.session_state:
     st.session_state.pergunta_input = ""
 
-if "ultimo_sql" not in st.session_state:
-    st.session_state.ultimo_sql = ""
-
-if "ultima_pergunta" not in st.session_state:
-    st.session_state.ultima_pergunta = ""
+if "ultimo_resultado" not in st.session_state:
+    st.session_state.ultimo_resultado = None
 
 with st.sidebar:
     st.subheader("💡 Perguntas de exemplo")
     for pergunta_ex in PERGUNTAS_EXEMPLO:
         if st.button(pergunta_ex, use_container_width=True):
             st.session_state.pergunta_input = pergunta_ex
+            st.session_state.ultimo_resultado = None
 
     st.divider()
 
@@ -321,6 +319,7 @@ with st.sidebar:
     for i, item in enumerate(reversed(st.session_state.historico[-10:])):
         if st.button(item, key=f"hist_{i}", use_container_width=True):
             st.session_state.pergunta_input = item
+            st.session_state.ultimo_resultado = None
 
     st.divider()
     uso_minuto, uso_hora = get_uso_atual()
@@ -363,17 +362,14 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
     schema = get_schema()
 
     try:
-        # 4. Gera SQL
         with st.spinner("Gerando SQL..."):
             sql = gerar_sql(pergunta_limpa, schema)
 
-        # 5. Valida SQL
         valido, mensagem_erro = validar_sql(sql)
         if not valido:
             st.error(mensagem_erro)
             st.stop()
 
-        # 6. Executa com retry automático
         df = None
         erro_anterior = None
 
@@ -395,56 +391,16 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
             st.code(sql, language="sql")
             st.stop()
 
-        # 7. Interpreta e exibe
         with st.spinner("Interpretando resultado..."):
             resposta = interpretar_resultado(pergunta_limpa, sql, df)
 
-        st.success(resposta)
-        tentar_grafico(df)
-
-        aba1, aba2 = st.tabs(["📊 Dados", "🔧 SQL gerado"])
-        with aba1:
-            st.dataframe(df, use_container_width=True)
-            col_csv, col_excel = st.columns([1, 1])
-            with col_csv:
-                st.download_button(
-                    label="📥 Baixar CSV",
-                    data=df.to_csv(index=False).encode("utf-8"),
-                    file_name="resultado.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            with col_excel:
-                buffer = io.BytesIO()
-                df.to_excel(buffer, index=False, engine="openpyxl")
-                st.download_button(
-                    label="📊 Baixar Excel",
-                    data=buffer.getvalue(),
-                    file_name="resultado.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-        with aba2:
-            st.code(sql, language="sql")
-
-        # 8. Feedback 👍 👎
-        st.divider()
-        st.caption("Essa resposta foi útil?")
-        col_like, col_dislike, _ = st.columns([1, 1, 8])
-
-        # Salva pergunta e sql na session para o feedback acessar
-        st.session_state.ultima_pergunta = pergunta_limpa
-        st.session_state.ultimo_sql = sql
-
-        with col_like:
-            if st.button("👍", key="like", use_container_width=True):
-                salvar_feedback(st.session_state.ultima_pergunta, st.session_state.ultimo_sql, "positivo")
-                st.success("Obrigado pelo feedback! 🙏")
-        with col_dislike:
-            if st.button("👎", key="dislike", use_container_width=True):
-                salvar_feedback(st.session_state.ultima_pergunta, st.session_state.ultimo_sql, "negativo")
-                st.warning("Feedback registrado. Vamos melhorar! 🛠️")
-
+        # Salva resultado na session para persistir após clique no feedback
+        st.session_state.ultimo_resultado = {
+            "resposta": resposta,
+            "df": df,
+            "sql": sql,
+            "pergunta": pergunta_limpa
+        }
         st.session_state.pergunta_input = ""
 
     except RateLimitError:
@@ -458,3 +414,56 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
     except Exception as e:
         logger.error(f"Erro inesperado: {e}", exc_info=True)
         st.error("Ocorreu um erro inesperado. Tente novamente.")
+
+# ─── EXIBE RESULTADO PERSISTIDO ───────────────────────────────────────────────
+if st.session_state.ultimo_resultado:
+    r = st.session_state.ultimo_resultado
+
+    st.success(r["resposta"])
+    tentar_grafico(r["df"])
+
+    aba1, aba2 = st.tabs(["📊 Dados", "🔧 SQL gerado"])
+    with aba1:
+        st.dataframe(r["df"], use_container_width=True)
+        col_csv, col_excel = st.columns([1, 1])
+        with col_csv:
+            st.download_button(
+                label="📥 Baixar CSV",
+                data=r["df"].to_csv(index=False).encode("utf-8"),
+                file_name="resultado.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with col_excel:
+            buffer = io.BytesIO()
+            r["df"].to_excel(buffer, index=False, engine="openpyxl")
+            st.download_button(
+                label="📊 Baixar Excel",
+                data=buffer.getvalue(),
+                file_name="resultado.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+    with aba2:
+        st.code(r["sql"], language="sql")
+
+    st.divider()
+    st.caption("Essa resposta foi útil?")
+
+    if "feedback_enviado" not in st.session_state:
+        st.session_state.feedback_enviado = False
+
+    if st.session_state.feedback_enviado:
+        st.success("Obrigado pelo feedback! 🙏")
+    else:
+        col_like, col_dislike, _ = st.columns([1, 1, 8])
+        with col_like:
+            if st.button("👍", key="like", use_container_width=True):
+                salvar_feedback(r["pergunta"], r["sql"], "positivo")
+                st.session_state.feedback_enviado = True
+                st.rerun()
+        with col_dislike:
+            if st.button("👎", key="dislike", use_container_width=True):
+                salvar_feedback(r["pergunta"], r["sql"], "negativo")
+                st.session_state.feedback_enviado = True
+                st.rerun()
