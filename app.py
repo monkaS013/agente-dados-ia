@@ -8,7 +8,14 @@ import os
 import json
 import re
 import time
+import logging
 from streamlit_cookies_controller import CookieController
+
+logging.basicConfig(
+    level=logging.ERROR,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 cliente = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -40,11 +47,11 @@ PERGUNTAS_EXEMPLO = [
     "Quais vendedores têm mais pedidos?",
 ]
 
-# ─── CACHE: Schema carregado uma única vez ─────────────────────────────────────
-@st.cache_data
+# ─── CACHE com TTL de 1 hora ───────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
 def get_schema():
     try:
-        conn = sqlite3.connect("file:ecommerce.db?mode=ro", uri=True)
+        conn = sqlite3.connect("ecommerce.db")
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tabelas = cursor.fetchall()
@@ -57,10 +64,11 @@ def get_schema():
         conn.close()
         return schema
     except Exception as e:
+        logger.error(f"Erro ao carregar schema: {e}", exc_info=True)
         st.error(f"Erro ao carregar schema do banco: {e}")
         return ""
 
-# ─── BANCO DE DADOS: Conexão somente leitura real ─────────────────────────────
+# ─── BANCO DE DADOS: Conexão somente leitura ──────────────────────────────────
 def executar_sql_seguro(sql):
     try:
         conn = sqlite3.connect("file:ecommerce.db?mode=ro", uri=True)
@@ -70,7 +78,7 @@ def executar_sql_seguro(sql):
     except Exception as e:
         return None, str(e)
 
-# ─── RATE LIMITING por sessão ──────────────────────────────────────────────────
+# ─── RATE LIMITING ─────────────────────────────────────────────────────────────
 def verificar_rate_limit():
     agora = time.time()
 
@@ -96,7 +104,15 @@ def registrar_uso():
         st.session_state.timestamps = []
     st.session_state.timestamps.append(time.time())
 
-# ─── SANITIZAÇÃO da pergunta ───────────────────────────────────────────────────
+def get_uso_atual():
+    agora = time.time()
+    if "timestamps" not in st.session_state:
+        return 0, 0
+    ultimo_minuto = [t for t in st.session_state.timestamps if agora - t < 60]
+    ultima_hora = [t for t in st.session_state.timestamps if agora - t < 3600]
+    return len(ultimo_minuto), len(ultima_hora)
+
+# ─── SANITIZAÇÃO ───────────────────────────────────────────────────────────────
 def sanitizar_pergunta(pergunta):
     pergunta = pergunta.strip()
     pergunta = re.sub(r'[\x00-\x1f\x7f]', '', pergunta)
@@ -127,7 +143,7 @@ def sanitizar_pergunta(pergunta):
 
     return pergunta, ""
 
-# ─── VALIDAÇÃO rigorosa do SQL ─────────────────────────────────────────────────
+# ─── VALIDAÇÃO DO SQL ──────────────────────────────────────────────────────────
 def validar_sql(sql):
     if not sql or not isinstance(sql, str) or not sql.strip():
         return False, "SQL vazio ou inválido gerado. Tente reformular a pergunta."
@@ -159,7 +175,7 @@ def validar_sql(sql):
 
     return True, ""
 
-# ─── GROQ: Chamada centralizada com exceções ───────────────────────────────────
+# ─── GROQ ──────────────────────────────────────────────────────────────────────
 def chamar_groq(mensagens):
     try:
         resposta = cliente.chat.completions.create(
@@ -227,7 +243,6 @@ SQL corrigido:"""
     return sql
 
 def interpretar_resultado(pergunta, sql, df):
-    # Limita linhas enviadas ao LLM para não estourar contexto
     resultado_str = df.head(MAX_LINHAS_LLM).to_string()
     if len(df) > MAX_LINHAS_LLM:
         resultado_str += f"\n... e mais {len(df) - MAX_LINHAS_LLM} linhas não exibidas."
@@ -253,7 +268,7 @@ def tentar_grafico(df):
         fig = px.bar(df, x=col1, y=col2, title="Visualização dos dados")
         st.plotly_chart(fig, use_container_width=True)
 
-# ─── HISTÓRICO POR USUÁRIO (cookie) ───────────────────────────────────────────
+# ─── HISTÓRICO POR USUÁRIO ─────────────────────────────────────────────────────
 def carregar_historico_cookie():
     try:
         valor = cookie.get("historico")
@@ -293,10 +308,21 @@ with st.sidebar:
             salvar_historico_cookie([])
             st.rerun()
 
-    # Fix: usa índice como key para evitar DuplicateWidgetID
     for i, item in enumerate(reversed(st.session_state.historico[-10:])):
         if st.button(item, key=f"hist_{i}", use_container_width=True):
             st.session_state.pergunta_input = item
+
+    # ── Feedback de uso do rate limit ──────────────────────────────────────────
+    st.divider()
+    uso_minuto, uso_hora = get_uso_atual()
+    restante_minuto = MAX_PERGUNTAS_POR_MINUTO - uso_minuto
+    restante_hora = MAX_PERGUNTAS_POR_HORA - uso_hora
+
+    st.caption("📊 Uso da sessão")
+    st.progress(uso_minuto / MAX_PERGUNTAS_POR_MINUTO,
+                text=f"Por minuto: {uso_minuto}/{MAX_PERGUNTAS_POR_MINUTO}")
+    st.progress(uso_hora / MAX_PERGUNTAS_POR_HORA,
+                text=f"Por hora: {uso_hora}/{MAX_PERGUNTAS_POR_HORA}")
 
 st.title("🤖 Agente de Análise de Dados com IA")
 st.caption("Faça perguntas em português sobre o e-commerce brasileiro da Olist")
@@ -381,8 +407,11 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
     except RateLimitError:
         st.warning("⚠️ Limite de requisições da API atingido. Aguarde alguns segundos e tente novamente.")
     except SQLInvalidoError as e:
+        logger.error(f"SQL inválido: {e}", exc_info=True)
         st.error(f"Erro ao gerar SQL: {e}")
     except APIError as e:
+        logger.error(f"Erro de API: {e}", exc_info=True)
         st.error(f"Erro na API: {e}")
     except Exception as e:
+        logger.error(f"Erro inesperado: {e}", exc_info=True)
         st.error("Ocorreu um erro inesperado. Tente novamente.")
