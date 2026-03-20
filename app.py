@@ -6,21 +6,11 @@ import plotly.express as px
 import streamlit as st
 import os
 import json
+from streamlit_cookies_controller import CookieController
 
 load_dotenv()
 cliente = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-HISTORICO_FILE = "historico.json"
-
-def carregar_historico():
-    if os.path.exists(HISTORICO_FILE):
-        with open(HISTORICO_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-def salvar_historico(historico):
-    with open(HISTORICO_FILE, "w", encoding="utf-8") as f:
-        json.dump(historico, f, ensure_ascii=False)
+cookie = CookieController()
 
 st.set_page_config(
     page_title="Agente de Dados IA",
@@ -38,6 +28,21 @@ PERGUNTAS_EXEMPLO = [
     "Qual o total de receita por mês em 2018?",
     "Quais vendedores têm mais pedidos?",
 ]
+
+def carregar_historico_cookie():
+    try:
+        valor = cookie.get("historico")
+        if valor:
+            return json.loads(valor)
+    except:
+        pass
+    return []
+
+def salvar_historico_cookie(historico):
+    try:
+        cookie.set("historico", json.dumps(historico, ensure_ascii=False))
+    except:
+        pass
 
 def get_schema():
     conn = sqlite3.connect("ecommerce.db")
@@ -159,9 +164,9 @@ def tentar_grafico(df):
         fig = px.bar(df, x=col1, y=col2, title="Visualização dos dados")
         st.plotly_chart(fig, use_container_width=True)
 
-# Carrega histórico persistente
+# Carrega histórico do cookie do usuário
 if "historico" not in st.session_state:
-    st.session_state.historico = carregar_historico()
+    st.session_state.historico = carregar_historico_cookie()
 
 with st.sidebar:
     st.subheader("💡 Perguntas de exemplo")
@@ -177,7 +182,7 @@ with st.sidebar:
     with col2:
         if st.button("🗑️", help="Limpar histórico"):
             st.session_state.historico = []
-            salvar_historico([])
+            salvar_historico_cookie([])
             st.rerun()
 
     for item in reversed(st.session_state.historico[-10:]):
@@ -195,10 +200,10 @@ pergunta = st.text_input(
 
 if st.button("🔍 Perguntar", type="primary") and pergunta:
 
-    # Salva no histórico imediatamente ao pesquisar
+    # Salva no histórico do usuário imediatamente
     if pergunta not in st.session_state.historico:
         st.session_state.historico.append(pergunta)
-        salvar_historico(st.session_state.historico)
+        salvar_historico_cookie(st.session_state.historico)
 
     schema = get_schema()
 
