@@ -140,12 +140,13 @@ with st.sidebar:
             st.session_state.pergunta_input = pergunta_ex
 
     st.divider()
-       st.subheader("🕘 Histórico")
+    st.subheader("🕘 Histórico")
     if "historico" not in st.session_state:
         st.session_state.historico = []
     for item in reversed(st.session_state.historico[-5:]):
         if st.button(item, key=f"hist_{item}", use_container_width=True):
             st.session_state.pergunta_input = item
+            
 if "pergunta_input" not in st.session_state:
     st.session_state.pergunta_input = ""
 
