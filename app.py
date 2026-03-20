@@ -9,6 +9,7 @@ import json
 import re
 import time
 import logging
+import io
 from streamlit_cookies_controller import CookieController
 
 logging.basicConfig(
@@ -68,7 +69,7 @@ def get_schema():
         st.error(f"Erro ao carregar schema do banco: {e}")
         return ""
 
-# ─── BANCO DE DADOS: Conexão somente leitura ──────────────────────────────────
+# ─── BANCO DE DADOS ────────────────────────────────────────────────────────────
 def executar_sql_seguro(sql):
     try:
         conn = sqlite3.connect("file:ecommerce.db?mode=ro", uri=True)
@@ -78,25 +79,40 @@ def executar_sql_seguro(sql):
     except Exception as e:
         return None, str(e)
 
+def salvar_feedback(pergunta, sql, avaliacao):
+    try:
+        conn = sqlite3.connect("ecommerce.db")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS feedbacks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pergunta TEXT,
+                sql_gerado TEXT,
+                avaliacao TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "INSERT INTO feedbacks (pergunta, sql_gerado, avaliacao) VALUES (?, ?, ?)",
+            (pergunta, sql, avaliacao)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao salvar feedback: {e}", exc_info=True)
+
 # ─── RATE LIMITING ─────────────────────────────────────────────────────────────
 def verificar_rate_limit():
     agora = time.time()
-
     if "timestamps" not in st.session_state:
         st.session_state.timestamps = []
-
     st.session_state.timestamps = [
         t for t in st.session_state.timestamps if agora - t < 3600
     ]
-
     ultimo_minuto = [t for t in st.session_state.timestamps if agora - t < 60]
-
     if len(ultimo_minuto) >= MAX_PERGUNTAS_POR_MINUTO:
         return False, f"Limite de {MAX_PERGUNTAS_POR_MINUTO} perguntas por minuto atingido. Aguarde."
-
     if len(st.session_state.timestamps) >= MAX_PERGUNTAS_POR_HORA:
         return False, f"Limite de {MAX_PERGUNTAS_POR_HORA} perguntas por hora atingido. Tente mais tarde."
-
     return True, ""
 
 def registrar_uso():
@@ -116,7 +132,6 @@ def get_uso_atual():
 def sanitizar_pergunta(pergunta):
     pergunta = pergunta.strip()
     pergunta = re.sub(r'[\x00-\x1f\x7f]', '', pergunta)
-
     padroes_suspeitos = [
         r'ign[o0]re.{0,20}instruct',
         r'forget.{0,20}instruct',
@@ -134,27 +149,21 @@ def sanitizar_pergunta(pergunta):
     for padrao in padroes_suspeitos:
         if re.search(padrao, pergunta_lower):
             return None, "Pergunta inválida detectada."
-
     if len(pergunta) > MAX_CHARS_PERGUNTA:
         return None, f"Pergunta muito longa. Máximo de {MAX_CHARS_PERGUNTA} caracteres."
-
     if len(pergunta) < 3:
         return None, "Pergunta muito curta."
-
     return pergunta, ""
 
 # ─── VALIDAÇÃO DO SQL ──────────────────────────────────────────────────────────
 def validar_sql(sql):
     if not sql or not isinstance(sql, str) or not sql.strip():
         return False, "SQL vazio ou inválido gerado. Tente reformular a pergunta."
-
     sql_limpo = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
     sql_limpo = re.sub(r'/\*.*?\*/', '', sql_limpo, flags=re.DOTALL)
     sql_upper = sql_limpo.upper().strip()
-
     if not sql_upper.startswith("SELECT"):
         return False, "Apenas queries SELECT são permitidas."
-
     comandos_proibidos = [
         "DROP", "DELETE", "INSERT", "UPDATE", "ALTER",
         "TRUNCATE", "CREATE", "REPLACE", "ATTACH",
@@ -163,16 +172,13 @@ def validar_sql(sql):
     for cmd in comandos_proibidos:
         if re.search(rf'\b{cmd}\b', sql_upper):
             return False, f"Query bloqueada: contém comando '{cmd}' não permitido."
-
     tabelas_sistema = ["SQLITE_MASTER", "SQLITE_SEQUENCE", "SQLITE_STAT"]
     for tabela in tabelas_sistema:
         if tabela in sql_upper:
             return False, "Acesso a tabelas do sistema não permitido."
-
     statements = [s.strip() for s in sql_limpo.split(';') if s.strip()]
     if len(statements) > 1:
         return False, "Múltiplos comandos SQL não são permitidos."
-
     return True, ""
 
 # ─── GROQ ──────────────────────────────────────────────────────────────────────
@@ -246,7 +252,6 @@ def interpretar_resultado(pergunta, sql, df):
     resultado_str = df.head(MAX_LINHAS_LLM).to_string()
     if len(df) > MAX_LINHAS_LLM:
         resultado_str += f"\n... e mais {len(df) - MAX_LINHAS_LLM} linhas não exibidas."
-
     prompt = f"""Você é um analista de dados. Responda a pergunta em português de forma clara e direta, como se fosse para um executivo.
 Baseie-se apenas nos dados fornecidos. Não invente informações.
 
@@ -255,7 +260,6 @@ SQL: {sql}
 Resultado: {resultado_str}
 
 Resposta:"""
-
     return chamar_groq([{"role": "user", "content": prompt}])
 
 # ─── GRÁFICO ───────────────────────────────────────────────────────────────────
@@ -291,6 +295,12 @@ if "historico" not in st.session_state:
 if "pergunta_input" not in st.session_state:
     st.session_state.pergunta_input = ""
 
+if "ultimo_sql" not in st.session_state:
+    st.session_state.ultimo_sql = ""
+
+if "ultima_pergunta" not in st.session_state:
+    st.session_state.ultima_pergunta = ""
+
 with st.sidebar:
     st.subheader("💡 Perguntas de exemplo")
     for pergunta_ex in PERGUNTAS_EXEMPLO:
@@ -312,12 +322,8 @@ with st.sidebar:
         if st.button(item, key=f"hist_{i}", use_container_width=True):
             st.session_state.pergunta_input = item
 
-    # ── Feedback de uso do rate limit ──────────────────────────────────────────
     st.divider()
     uso_minuto, uso_hora = get_uso_atual()
-    restante_minuto = MAX_PERGUNTAS_POR_MINUTO - uso_minuto
-    restante_hora = MAX_PERGUNTAS_POR_HORA - uso_hora
-
     st.caption("📊 Uso da sessão")
     st.progress(uso_minuto / MAX_PERGUNTAS_POR_MINUTO,
                 text=f"Por minuto: {uso_minuto}/{MAX_PERGUNTAS_POR_MINUTO}")
@@ -399,7 +405,6 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
         aba1, aba2 = st.tabs(["📊 Dados", "🔧 SQL gerado"])
         with aba1:
             st.dataframe(df, use_container_width=True)
-
             col_csv, col_excel = st.columns([1, 1])
             with col_csv:
                 st.download_button(
@@ -410,7 +415,6 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
                     use_container_width=True
                 )
             with col_excel:
-                import io
                 buffer = io.BytesIO()
                 df.to_excel(buffer, index=False, engine="openpyxl")
                 st.download_button(
@@ -422,6 +426,24 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
                 )
         with aba2:
             st.code(sql, language="sql")
+
+        # 8. Feedback 👍 👎
+        st.divider()
+        st.caption("Essa resposta foi útil?")
+        col_like, col_dislike, _ = st.columns([1, 1, 8])
+
+        # Salva pergunta e sql na session para o feedback acessar
+        st.session_state.ultima_pergunta = pergunta_limpa
+        st.session_state.ultimo_sql = sql
+
+        with col_like:
+            if st.button("👍", key="like", use_container_width=True):
+                salvar_feedback(st.session_state.ultima_pergunta, st.session_state.ultimo_sql, "positivo")
+                st.success("Obrigado pelo feedback! 🙏")
+        with col_dislike:
+            if st.button("👎", key="dislike", use_container_width=True):
+                salvar_feedback(st.session_state.ultima_pergunta, st.session_state.ultimo_sql, "negativo")
+                st.warning("Feedback registrado. Vamos melhorar! 🛠️")
 
         st.session_state.pergunta_input = ""
 
