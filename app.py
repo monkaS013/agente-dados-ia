@@ -5,10 +5,22 @@ from dotenv import load_dotenv
 import plotly.express as px
 import streamlit as st
 import os
-import time
+import json
 
 load_dotenv()
 cliente = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+HISTORICO_FILE = "historico.json"
+
+def carregar_historico():
+    if os.path.exists(HISTORICO_FILE):
+        with open(HISTORICO_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def salvar_historico(historico):
+    with open(HISTORICO_FILE, "w", encoding="utf-8") as f:
+        json.dump(historico, f, ensure_ascii=False)
 
 st.set_page_config(
     page_title="Agente de Dados IA",
@@ -68,11 +80,11 @@ Regras obrigatórias:
    SELECT * FROM (SELECT ... UNION ALL SELECT ...) ORDER BY ...
 5. Nunca use funções que não existem no SQLite (ex: MONTH(), YEAR() não existem — use strftime('%m', coluna) e strftime('%Y', coluna))
 6. Para datas, sempre use strftime() do SQLite
-7. Quando a pergunta pedir "top N e bottom N" ao mesmo tempo, use CTE ou subquery, nunca ORDER BY dentro do UNION
+7. Quando a pergunta pedir top N e bottom N ao mesmo tempo, use CTE ou subquery, nunca ORDER BY dentro do UNION
 8. Sempre use aliases claros nas colunas calculadas
 9. Prefira JOINs explícitos (INNER JOIN, LEFT JOIN) em vez de subqueries quando possível
 10. Nunca retorne mais de 1000 linhas — use LIMIT quando necessário
-11. Nunca use funções de janela (LAG, LEAD, RANK, ROW_NUMBER) dentro de HAVING ou WHERE — calcule em CTE ou subquery primeiro
+11. Nunca use funções de janela (LAG, LEAD, RANK, ROW_NUMBER) dentro de HAVING ou WHERE
 12. Para calcular crescimento mês a mês, use uma subquery com self-join em vez de LAG()
 13. Funções de janela só podem aparecer no SELECT, nunca em HAVING, WHERE ou GROUP BY
 
@@ -147,6 +159,10 @@ def tentar_grafico(df):
         fig = px.bar(df, x=col1, y=col2, title="Visualização dos dados")
         st.plotly_chart(fig, use_container_width=True)
 
+# Carrega histórico persistente
+if "historico" not in st.session_state:
+    st.session_state.historico = carregar_historico()
+
 with st.sidebar:
     st.subheader("💡 Perguntas de exemplo")
     for pergunta_ex in PERGUNTAS_EXEMPLO:
@@ -154,10 +170,17 @@ with st.sidebar:
             st.session_state.pergunta_input = pergunta_ex
 
     st.divider()
-    st.subheader("🕘 Histórico")
-    if "historico" not in st.session_state:
-        st.session_state.historico = []
-    for item in reversed(st.session_state.historico[-5:]):
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader("🕘 Histórico")
+    with col2:
+        if st.button("🗑️", help="Limpar histórico"):
+            st.session_state.historico = []
+            salvar_historico([])
+            st.rerun()
+
+    for item in reversed(st.session_state.historico[-10:]):
         if st.button(item, key=f"hist_{item}", use_container_width=True):
             st.session_state.pergunta_input = item
 
@@ -171,6 +194,12 @@ pergunta = st.text_input(
 )
 
 if st.button("🔍 Perguntar", type="primary") and pergunta:
+
+    # Salva no histórico imediatamente ao pesquisar
+    if pergunta not in st.session_state.historico:
+        st.session_state.historico.append(pergunta)
+        salvar_historico(st.session_state.historico)
+
     schema = get_schema()
 
     with st.spinner("Gerando SQL..."):
@@ -227,7 +256,4 @@ if st.button("🔍 Perguntar", type="primary") and pergunta:
         with aba2:
             st.code(sql, language="sql")
 
-        if "historico" not in st.session_state:
-            st.session_state.historico = []
-        st.session_state.historico.append(pergunta)
         st.session_state.pergunta_input = ""
